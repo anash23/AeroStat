@@ -1,0 +1,496 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DHT.h>
+
+#define DHTPIN 4
+#define DHTTYPE DHT11
+
+const char* ssid     = "YOUR_WIFI_NAME";       // <-- CHANGE THIS
+const char* password = "YOUR_WIFI_PASSWORD";   // <-- CHANGE THIS
+
+WebServer server(80);
+DHT dht(DHTPIN, DHTTYPE);
+
+float threshold = 40.0;
+bool  autoMode  = true;
+bool  fanState  = false;
+
+// ---------- HTML PAGE ----------
+String getPage(float temp, float humidity) {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartFan</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:         #0d0f14;
+    --surface:    #161a23;
+    --surface2:   #1e2330;
+    --border:     rgba(255,255,255,0.07);
+    --text:       #eaeef8;
+    --muted:      #6b7280;
+    --accent:     #38bdf8;
+    --accent-dim: rgba(56,189,248,0.12);
+    --on:         #34d399;
+    --on-dim:     rgba(52,211,153,0.12);
+    --off:        #f87171;
+    --off-dim:    rgba(248,113,113,0.12);
+    --warn:       #fbbf24;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    padding: 0 0 40px;
+  }
+
+  /* Header */
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header-title {
+    font-family: 'Space Mono', monospace;
+    font-size: 15px;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .live-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--on);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.4; transform: scale(0.8); }
+  }
+  .live-label {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'Space Mono', monospace;
+    letter-spacing: 0.05em;
+  }
+
+  /* Content */
+  .content { max-width: 480px; margin: 0 auto; padding: 24px 16px 0; }
+
+  /* Big temp display */
+  .temp-hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 32px 24px;
+    text-align: center;
+    margin-bottom: 14px;
+    position: relative;
+    overflow: hidden;
+  }
+  .temp-hero::before {
+    content: '';
+    position: absolute;
+    top: -40px; right: -40px;
+    width: 160px; height: 160px;
+    border-radius: 50%;
+    background: var(--accent-dim);
+    filter: blur(40px);
+    pointer-events: none;
+  }
+  .temp-label {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-family: 'Space Mono', monospace;
+    margin-bottom: 8px;
+  }
+  .temp-value {
+    font-family: 'Space Mono', monospace;
+    font-size: 72px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--text);
+    letter-spacing: -2px;
+  }
+  .temp-unit {
+    font-size: 28px;
+    color: var(--muted);
+    vertical-align: super;
+    margin-left: 2px;
+  }
+  .temp-sub {
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .temp-sub span { color: var(--accent); font-weight: 600; }
+
+  /* Stats row */
+  .stats-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 18px;
+  }
+  .stat-card-label {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-family: 'Space Mono', monospace;
+    margin-bottom: 8px;
+  }
+  .stat-card-value {
+    font-family: 'Space Mono', monospace;
+    font-size: 26px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .stat-card-value.fan-on   { color: var(--on); }
+  .stat-card-value.fan-off  { color: var(--off); }
+  .stat-card-value.humidity { color: var(--accent); }
+
+  /* Section card */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 12px;
+  }
+  .card-title {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-family: 'Space Mono', monospace;
+    margin-bottom: 16px;
+  }
+
+  /* Mode toggle */
+  .mode-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .mode-btn {
+    display: block;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    font-family: 'Space Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .mode-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .mode-btn.active-auto {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .mode-btn.active-manual {
+    background: rgba(251,191,36,0.1);
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+
+  /* Slider */
+  .threshold-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .threshold-num {
+    font-family: 'Space Mono', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--warn);
+  }
+  input[type=range] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--surface2);
+    outline: none;
+    border: 1px solid var(--border);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--warn);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+    box-shadow: 0 0 0 3px rgba(251,191,36,0.2);
+  }
+
+  /* Manual controls */
+  .ctrl-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .ctrl-btn {
+    display: block;
+    padding: 14px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    font-family: 'Space Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 0.05em;
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-weight: 700;
+  }
+  .ctrl-btn.fan-on-btn {
+    background: var(--on-dim);
+    border-color: var(--on);
+    color: var(--on);
+  }
+  .ctrl-btn.fan-off-btn {
+    background: var(--off-dim);
+    border-color: var(--off);
+    color: var(--off);
+  }
+  .ctrl-btn:hover  { filter: brightness(1.2); transform: translateY(-1px); }
+  .ctrl-btn:active { transform: translateY(0); }
+
+  /* Refresh timer bar */
+  .refresh-bar-wrap {
+    margin-top: 24px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .refresh-label { font-size: 11px; color: var(--muted); font-family: 'Space Mono', monospace; }
+  .refresh-bar-track {
+    flex: 1;
+    height: 3px;
+    background: var(--surface2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .refresh-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    width: 100%;
+    animation: countdown 10s linear forwards;
+  }
+  @keyframes countdown { from { width: 100%; } to { width: 0%; } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="header-title">// SMART_FAN</span>
+  <div class="header-right">
+    <div class="live-dot"></div>
+    <span class="live-label" id="clock">--:--:--</span>
+  </div>
+</div>
+
+<div class="content">
+
+  <!-- Temperature Hero -->
+  <div class="temp-hero">
+    <div class="temp-label">temperature</div>
+    <div class="temp-value">)rawliteral" + String(temp, 1) + R"rawliteral(<span class="temp-unit">°C</span></div>
+    <div class="temp-sub">
+      Threshold &nbsp;<span id="thresh-display">)rawliteral" + String(threshold, 1) + R"rawliteral(°C</span>
+    </div>
+  </div>
+
+  <!-- Stats Row -->
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-card-label">fan status</div>
+      <div class="stat-card-value )rawliteral" + String(fanState ? "fan-on" : "fan-off") + R"rawliteral(">)rawliteral" + String(fanState ? "ON" : "OFF") + R"rawliteral(</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-label">humidity</div>
+      <div class="stat-card-value humidity">)rawliteral" + String(humidity, 0) + R"rawliteral(%</div>
+    </div>
+  </div>
+
+  <!-- Mode -->
+  <div class="card">
+    <div class="card-title">mode</div>
+    <div class="mode-row">
+      <a href="/auto"   class="mode-btn )rawliteral" + String(autoMode  ? "active-auto"   : "") + R"rawliteral(">AUTO</a>
+      <a href="/manual" class="mode-btn )rawliteral" + String(!autoMode ? "active-manual" : "") + R"rawliteral(">MANUAL</a>
+    </div>
+  </div>
+
+  <!-- Threshold -->
+  <div class="card">
+    <div class="card-title">threshold</div>
+    <div class="threshold-row">
+      <span>Set trigger point</span>
+      <span class="threshold-num" id="thresh-val">)rawliteral" + String((int)threshold) + R"rawliteral(°C</span>
+    </div>
+    <input type="range" min="20" max="50" value=")rawliteral" + String((int)threshold) + R"rawliteral("
+      id="thresh-slider"
+      oninput="document.getElementById('thresh-val').textContent=this.value+'°C';document.getElementById('thresh-display').textContent=this.value+'.0°C';"
+      onchange="location.href='/set?value='+this.value">
+  </div>
+
+  <!-- Manual Control -->
+  <div class="card">
+    <div class="card-title">manual control</div>
+    <div class="ctrl-row">
+      <a href="/on"  class="ctrl-btn fan-on-btn">FAN ON</a>
+      <a href="/off" class="ctrl-btn fan-off-btn">FAN OFF</a>
+    </div>
+  </div>
+
+  <!-- Refresh bar -->
+  <div class="refresh-bar-wrap">
+    <span class="refresh-label">refresh in</span>
+    <div class="refresh-bar-track">
+      <div class="refresh-bar-fill"></div>
+    </div>
+    <span class="refresh-label" id="rsec">10s</span>
+  </div>
+
+</div>
+
+<script>
+  function tick() {
+    const now = new Date();
+    document.getElementById('clock').textContent = now.toLocaleTimeString('en-GB');
+  }
+  tick(); setInterval(tick, 1000);
+
+  let secs = 10;
+  const rsec = document.getElementById('rsec');
+  const timer = setInterval(() => {
+    secs--;
+    rsec.textContent = secs + 's';
+    if (secs <= 0) { clearInterval(timer); location.reload(); }
+  }, 1000);
+</script>
+</body>
+</html>
+)rawliteral";
+  return html;
+}
+
+// ---------- ROUTES ----------
+void handleRoot() {
+  float temp     = dht.readTemperature();
+  float humidity = dht.readHumidity();
+  if (isnan(temp))     temp     = 0.0;
+  if (isnan(humidity)) humidity = 0.0;
+  server.send(200, "text/html", getPage(temp, humidity));
+}
+
+void handleSet() {
+  if (server.hasArg("value")) {
+    threshold = server.arg("value").toFloat();
+  }
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handleAuto() {
+  autoMode = true;
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handleManual() {
+  autoMode = false;
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handleOn() {
+  fanState = true;
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handleOff() {
+  fanState = false;
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+// ---------- SETUP ----------
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  server.on("/",       handleRoot);
+  server.on("/set",    handleSet);
+  server.on("/auto",   handleAuto);
+  server.on("/manual", handleManual);
+  server.on("/on",     handleOn);
+  server.on("/off",    handleOff);
+  server.begin();
+}
+
+// ---------- LOOP ----------
+void loop() {
+  server.handleClient();
+
+  float temp = dht.readTemperature();
+  if (isnan(temp)) return;
+
+  if (autoMode) {
+    fanState = (temp > threshold);
+  }
+
+  // Control via DAC (GPIO 26)
+  if (fanState) {
+    dacWrite(26, 5);    // Fan ON
+  } else {
+    dacWrite(26, 200);  // Fan OFF
+  }
+
+  delay(1000);
+}
